@@ -85,11 +85,10 @@ class ReLU_Layer(torch.nn.Module):
     
     @torch.jit.script
     def jit_forward(input, W, b, l, u, idx1: int, idx2: int):
-        torch.matmul(W, input, out=input)
-        input.add_(b)
-        input[idx1:idx2].clamp_(l, u)
-        return input
-    
+        out = torch.matmul(W, input) + b
+        out[idx1:idx2].clamp_(l, u)
+        return out
+
 
 class ReLU_QP(object):
     def __init__(self):
