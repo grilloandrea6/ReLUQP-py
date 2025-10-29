@@ -45,7 +45,9 @@ class Settings(object):
                         eq_tol=1e-6,
                         check_interval=25,
                         device = torch.device("cuda" if torch.cuda.is_available() else "cpu"),
-                        precision= torch.float64):
+                        precision= torch.float64,
+                        quantize_W_matrices=False,
+                        quantize_values=False):
         
         self.verbose = verbose
         self.warm_starting = warm_starting
@@ -63,6 +65,8 @@ class Settings(object):
         self.check_interval = check_interval
         self.device = device
         self.precision = precision
+        self.quantize_W_matrices = quantize_W_matrices
+        self.quantize_values = quantize_values
 
 class Info(object):
     def __init__(self, iter=None, 

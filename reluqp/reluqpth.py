@@ -28,11 +28,13 @@ class ReLU_QP(object):
                         adaptive_rho=True,
                         adaptive_rho_interval=1,
                         adaptive_rho_tolerance=5,
-                        max_iter=1000,
+                        max_iter=800,
                         eps_abs=1e-3,
                         check_interval=25,
                         device = torch.device("cuda" if torch.cuda.is_available() else "cpu"),
-                        precision= torch.float64):
+                        precision= torch.float64,
+                        quantize_W_matrices=True,
+                        quantize_values=True):
         """
         Setup ReLU-QP solver problem of the form
 
@@ -57,7 +59,9 @@ class ReLU_QP(object):
                                     eps_abs=eps_abs,
                                     check_interval=check_interval,
                                     device=device,
-                                    precision=precision)
+                                    precision=precision,
+                                    quantize_W_matrices=quantize_W_matrices,
+                                    quantize_values=quantize_values)
 
         self.QP = QP(H, g, A, l, u)
 

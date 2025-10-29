@@ -1,8 +1,11 @@
 
 import torch
 import numpy as np
+import os
 from reluqp.classes import Settings, Results, Info, QP
+from .matrix_quantization import matrix_quantization
 
+CACHE_FNAME = "reluqp_quantized_matrices.pt"
 
 class ReLU_Layer(torch.nn.Module):
     def __init__(self, QP=None, settings=Settings()):
@@ -13,9 +16,48 @@ class ReLU_Layer(torch.nn.Module):
         self.settings = settings
         self.rhos = self.setup_rhos()
         
-        self.W_ks = self.setup_matrices()
+        self.W_ks = self.load_or_compute_matrices()
         self.clamp_inds = (self.QP.nx, self.QP.nx + self.QP.nc)
         self.setup_quantization()
+
+    def save_matrices(self, W_ks):
+        print(f"Saving quantized matrices to: {CACHE_FNAME}")
+        try:
+            torch.save({
+                'W_ks': W_ks,
+                'rhos': self.rhos
+            }, CACHE_FNAME)
+        except Exception as e:
+            print(f"Failed to save matrices: {e}")
+
+    def load_or_compute_matrices(self):
+        """Checks cache, loads if available, otherwise computes and saves."""
+        if os.path.exists(CACHE_FNAME):
+            print(f"Found saved quantized matrices cache: {CACHE_FNAME}. Loading...")
+            try:
+                loaded_data = torch.load(CACHE_FNAME)
+                # Verify rhos match (simple check)
+                if not torch.equal(loaded_data['rhos'], self.rhos):
+                    print("WARNING: Cached rhos do not match current settings. Recomputing.")
+                    W_ks = self.setup_matrices()
+                    self.save_matrices(W_ks)
+                    return W_ks
+
+                W_ks = loaded_data['W_ks']
+
+                for k in W_ks:
+                    W_ks[k] = W_ks[k].to(self.settings.device, self.settings.precision)
+
+                print("Successfully loaded matrices from cache.")
+                return W_ks
+
+            except Exception as e:
+                print(f"Error loading matrices from cache: {e}. Recomputing.")
+
+        print("Matrices cache not found or corrupted. Computing matrices (requires Gurobi).")
+        W_ks = self.setup_matrices()
+        self.save_matrices(W_ks)
+        return W_ks
 
     def setup_rhos(self):
         """
@@ -46,19 +88,21 @@ class ReLU_Layer(torch.nn.Module):
         self.min_val = -self.max_val - 1
 
         # Ensure everything is on the same device and dtype
-        stng = self.settings
-        device = self.QP.H.device if self.QP and hasattr(self.QP.H, 'device') else torch.device(stng.device)
-        dtype = self.QP.H.dtype if self.QP and hasattr(self.QP.H, 'dtype') else stng.precision
+        device = self.QP.H.device if self.QP and hasattr(self.QP.H, 'device') else torch.device(self.settings.device)
+        dtype = self.QP.H.dtype if self.QP and hasattr(self.QP.H, 'dtype') else self.settings.precision
 
         self.scale = torch.as_tensor(self.scale, device=device, dtype=dtype)
         self.min_val = torch.as_tensor(self.min_val, device=device, dtype=dtype)
         self.max_val = torch.as_tensor(self.max_val, device=device, dtype=dtype)
 
     def q(self, v: torch.Tensor) -> torch.Tensor:
+        if not self.settings.quantize_values:
+            return v
+
         # Scale input
         scaled = v * self.scale
 
-        # Check for out-of-range values (keep on GPU if possible)
+        # Check for out-of-range values
         if torch.any((scaled < self.min_val) | (scaled > self.max_val)):
             raise RuntimeError("Quantization overflow: some values outside representable range")
 
@@ -98,11 +142,17 @@ class ReLU_Layer(torch.nn.Module):
             K = kkt_rhs_invs[rho_ind]
             Ix = torch.eye(nx, device=stng.device, dtype=stng.precision).contiguous()
             Ic = torch.eye(nc, device=stng.device, dtype=stng.precision).contiguous()
-            W_ks[rho_ind] = torch.cat([
+            W_k = torch.cat([
                 torch.cat([ K @ (sigma * Ix - A.T @ (rho @ A)),           2 * K @ A.T @ rho,            -K @ A.T], dim=1),
                 torch.cat([ A @ K @ (sigma * Ix - A.T @ (rho @ A)) + A,   2 * A @ K @ A.T @ rho - Ic,  -A @ K @ A.T + rho_inv], dim=1),
                 torch.cat([ rho @ A,                                      -rho,                         Ic], dim=1)
             ], dim=0).contiguous()
+
+            if stng.quantize_W_matrices:
+                W_k_quantized_np = matrix_quantization(W_k.cpu().numpy(), bins=1000)
+                W_ks[rho_ind] = torch.tensor(W_k_quantized_np, device=stng.device, dtype=stng.precision).contiguous()
+            else:
+                W_ks[rho_ind] = W_k
         return W_ks
 
     def forward(self, input, idx):
