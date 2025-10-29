@@ -13,7 +13,7 @@ class ReLU_Layer(torch.nn.Module):
         self.settings = settings
         self.rhos = self.setup_rhos()
         
-        self.W_ks, self.B_ks, self.b_ks = self.setup_matrices()
+        self.W_ks = self.setup_matrices()
         self.clamp_inds = (self.QP.nx, self.QP.nx + self.QP.nc)
         self.setup_quantization()
 
@@ -47,8 +47,8 @@ class ReLU_Layer(torch.nn.Module):
 
         # Ensure everything is on the same device and dtype
         stng = self.settings
-        device = torch.device('cuda') if torch.cuda.is_available() else torch.device(stng.device)
-        dtype = stng.precision
+        device = self.QP.H.device if self.QP and hasattr(self.QP.H, 'device') else torch.device(stng.device)
+        dtype = self.QP.H.dtype if self.QP and hasattr(self.QP.H, 'dtype') else stng.precision
 
         self.scale = torch.as_tensor(self.scale, device=device, dtype=dtype)
         self.min_val = torch.as_tensor(self.min_val, device=device, dtype=dtype)
@@ -87,8 +87,7 @@ class ReLU_Layer(torch.nn.Module):
             kkt_rhs_invs.append(torch.inverse(H + sigma * torch.eye(nx).to(g) + A.T @ (rho @ A)))
 
         W_ks = {}
-        B_ks = {}
-        b_ks = {}
+
         
         # Other layer updates for each rho
         for rho_ind, rho_scalar in enumerate(self.rhos):
@@ -104,19 +103,16 @@ class ReLU_Layer(torch.nn.Module):
                 torch.cat([ A @ K @ (sigma * Ix - A.T @ (rho @ A)) + A,   2 * A @ K @ A.T @ rho - Ic,  -A @ K @ A.T + rho_inv], dim=1),
                 torch.cat([ rho @ A,                                      -rho,                         Ic], dim=1)
             ], dim=0).contiguous()
-            B_ks[rho_ind] = torch.cat([-K, -A @ K, torch.zeros(nc, nx).to(g)], dim=0).contiguous()
-            b_ks[rho_ind] = (B_ks[rho_ind] @ g).contiguous()
-        return W_ks, B_ks, b_ks
+        return W_ks
 
     def forward(self, input, idx):
         input = self.q(input)
-        input = self.jit_forward(input, self.W_ks[idx], self.b_ks[idx], self.QP.l, self.QP.u, self.clamp_inds[0], self.clamp_inds[1])
+        input = self.jit_forward(input, self.W_ks[idx], self.QP.l, self.QP.u, self.clamp_inds[0], self.clamp_inds[1])
         return input
     
     @torch.jit.script
-    def jit_forward(input, W, b, l, u, idx1: int, idx2: int):
+    def jit_forward(input, W, l, u, idx1: int, idx2: int):
         torch.matmul(W, input, out=input)
-        input.add_(b)
         input[idx1:idx2].clamp_(l, u)
         return input
     
