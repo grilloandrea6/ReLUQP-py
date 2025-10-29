@@ -4,90 +4,8 @@ import numpy as np
 from reluqp.classes import Settings, Results, Info, QP
 # from utils import *
 import timeit
-# adopted from swami's implementation
-class ReLU_Layer(torch.nn.Module):
-    def __init__(self, QP=None, settings=Settings()):
-        super(ReLU_Layer, self).__init__()
 
-        torch.set_default_dtype(settings.precision)
-        self.QP = QP
-        self.settings = settings
-        self.rhos = self.setup_rhos()
-        
-        self.W_ks, self.B_ks, self.b_ks = self.setup_matrices()
-        self.clamp_inds = (self.QP.nx, self.QP.nx + self.QP.nc)
-
-    def setup_rhos(self):
-        """
-        Setup rho values for ADMM
-        """
-        stng = self.settings
-        rhos = [stng.rho]
-        if stng.adaptive_rho:
-            rho = stng.rho/stng.adaptive_rho_tolerance
-            while rho >= stng.rho_min:
-                rhos.append(rho)
-                rho = rho/stng.adaptive_rho_tolerance
-            rho = stng.rho*stng.adaptive_rho_tolerance
-            while rho <= stng.rho_max:
-                rhos.append(rho)
-                rho = rho*stng.adaptive_rho_tolerance
-            rhos.sort()
-        # conver to torch tensor
-        rhos = torch.tensor(rhos, device=stng.device, dtype=stng.precision).contiguous()
-        return rhos
-    
-    def setup_matrices(self):
-        """
-        Setup ADMM matrices for ReLU-QP solver for each rho
-        """
-        # unpack values
-        H, g, A, l, u = self.QP.H, self.QP.g, self.QP.A, self.QP.l, self.QP.u
-        nx, nc = self.QP.nx, self.QP.nc
-        sigma = self.settings.sigma
-        stng = self.settings
-
-        # Calculate kkt_rhs_invs
-        kkt_rhs_invs = []
-        for rho_scalar in self.rhos:
-            rho = rho_scalar * torch.ones(nc).to(g)
-            rho[(u - l) <= stng.eq_tol] = rho_scalar * 1e3
-            rho = torch.diag(rho)
-            kkt_rhs_invs.append(torch.inverse(H + sigma * torch.eye(nx).to(g) + A.T @ (rho @ A)))
-
-        W_ks = {}
-        B_ks = {}
-        b_ks = {}
-        
-        # Other layer updates for each rho
-        for rho_ind, rho_scalar in enumerate(self.rhos):
-            rho = rho_scalar * torch.ones(nc, device=stng.device, dtype=stng.precision).contiguous()
-            rho[(u - l) <= stng.eq_tol] = rho_scalar * 1e3
-            rho_inv = torch.diag(1.0 / rho)
-            rho = torch.diag(rho).to(device=stng.device, dtype=stng.precision).contiguous()
-            K = kkt_rhs_invs[rho_ind]
-            Ix = torch.eye(nx, device=stng.device, dtype=stng.precision).contiguous()
-            Ic = torch.eye(nc, device=stng.device, dtype=stng.precision).contiguous()
-            W_ks[rho_ind] = torch.cat([
-                torch.cat([ K @ (sigma * Ix - A.T @ (rho @ A)),           2 * K @ A.T @ rho,            -K @ A.T], dim=1),
-                torch.cat([ A @ K @ (sigma * Ix - A.T @ (rho @ A)) + A,   2 * A @ K @ A.T @ rho - Ic,  -A @ K @ A.T + rho_inv], dim=1),
-                torch.cat([ rho @ A,                                      -rho,                         Ic], dim=1)
-            ], dim=0).contiguous()
-            B_ks[rho_ind] = torch.cat([-K, -A @ K, torch.zeros(nc, nx).to(g)], dim=0).contiguous()
-            b_ks[rho_ind] = (B_ks[rho_ind] @ g).contiguous()
-        return W_ks, B_ks, b_ks
-
-    def forward(self, input, idx):
-        input = self.jit_forward(input, self.W_ks[idx], self.b_ks[idx], self.QP.l, self.QP.u, self.clamp_inds[0], self.clamp_inds[1])
-        return input
-    
-    @torch.jit.script
-    def jit_forward(input, W, b, l, u, idx1: int, idx2: int):
-        torch.matmul(W, input, out=input)
-        input.add_(b)
-        input[idx1:idx2].clamp_(l, u)
-        return input
-    
+from reluqp.relu_layer import ReLU_Layer
 
 class ReLU_QP(object):
     def __init__(self):
@@ -110,7 +28,7 @@ class ReLU_QP(object):
                         adaptive_rho=True,
                         adaptive_rho_interval=1,
                         adaptive_rho_tolerance=5,
-                        max_iter=4000,
+                        max_iter=1000,
                         eps_abs=1e-3,
                         check_interval=25,
                         device = torch.device("cuda" if torch.cuda.is_available() else "cpu"),
