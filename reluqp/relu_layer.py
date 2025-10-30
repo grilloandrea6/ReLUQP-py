@@ -79,8 +79,8 @@ class ReLU_Layer(torch.nn.Module):
         rhos = torch.tensor(rhos, device=stng.device, dtype=stng.precision).contiguous()
         return rhos
     
-    def setup_quantization(self, n_int=17):
-        n_frac = 35 - n_int
+    def setup_quantization(self, n_int=16):
+        n_frac = 32 - n_int
         self.n_int = n_int
         self.n_frac = n_frac
         self.scale = 2 ** n_frac
@@ -132,9 +132,11 @@ class ReLU_Layer(torch.nn.Module):
 
         W_ks = {}
 
+        total = len(self.rhos)
         
         # Other layer updates for each rho
         for rho_ind, rho_scalar in enumerate(self.rhos):
+            print(f"Computing matrices for rho {rho_ind+1}/{total} (rho={rho_scalar:.6g}). {total - rho_ind - 1} left...")
             rho = rho_scalar * torch.ones(nc, device=stng.device, dtype=stng.precision).contiguous()
             rho[(u - l) <= stng.eq_tol] = rho_scalar * 1e3
             rho_inv = torch.diag(1.0 / rho)
@@ -149,7 +151,7 @@ class ReLU_Layer(torch.nn.Module):
             ], dim=0).contiguous()
 
             if stng.quantize_W_matrices:
-                W_k_quantized_np = matrix_quantization(W_k.cpu().numpy(), bins=1000)
+                W_k_quantized_np = matrix_quantization(W_k.cpu().numpy(), bins=10000)
                 W_ks[rho_ind] = torch.tensor(W_k_quantized_np, device=stng.device, dtype=stng.precision).contiguous()
             else:
                 W_ks[rho_ind] = W_k

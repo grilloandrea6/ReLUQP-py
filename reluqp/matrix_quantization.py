@@ -6,7 +6,7 @@ from gurobipy import GRB
 EXPS = np.arange(-32, 32)
 
 
-def matrix_quantization(A, bins=1000, metric='absolute', time_limit=600):
+def matrix_quantization(A, bins=10000, metric='absolute', time_limit=600):
     # 1. SETUP AND SOLVE MIP
     centers, counts, rep_values, zeros = prepare_bins(A, B=bins)
     E = compute_error_bins(rep_values, metric=metric)
